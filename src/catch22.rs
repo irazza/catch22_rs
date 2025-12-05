@@ -700,8 +700,9 @@ pub fn pd_periodicity_wang_th0_01(a: &[f64]) -> f64 {
         let i_peak = peaks[i];
         let the_peak = acf[i_peak as usize];
 
-        let mut j: i32 = -1;
-        while troughs[(j as usize) + 1] < i_peak as f64 && (j as usize) + 1 < n_troughs {
+        let mut j: isize = -1;
+
+        while (j + 1) < n_troughs as isize && troughs[(j + 1) as usize] < i_peak as f64 {
             j += 1;
         }
 
