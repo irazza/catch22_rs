@@ -1,4 +1,7 @@
-use catch22::{compute, compute_all, Catch22Error, N_CATCH22};
+use catch22::{
+    compute, compute_all, compute_all_unchecked, compute_unchecked, zscore, Catch22Error,
+    N_CATCH22,
+};
 
 #[test]
 fn test_catch22() {
@@ -27,6 +30,41 @@ fn test_compute_all_matches_compute() {
 }
 
 #[test]
+fn test_compute_unchecked_matches_checked() {
+    let time_series = (0..100)
+        .map(|i| (i as f64 * 0.01).sin() + (i as f64 * 0.0001))
+        .collect::<Vec<_>>();
+
+    for i in 0..N_CATCH22 {
+        let checked = compute(&time_series, i).unwrap();
+        let unchecked = compute_unchecked(&time_series, i);
+        assert!(
+            (checked - unchecked).abs() < 1e-12 || (checked.is_nan() && unchecked.is_nan()),
+            "feature {i} mismatch: checked={checked}, unchecked={unchecked}"
+        );
+    }
+}
+
+#[test]
+fn test_compute_all_unchecked_matches_checked() {
+    let time_series = (0..100)
+        .map(|i| (i as f64 * 0.01).sin() + (i as f64 * 0.0001))
+        .collect::<Vec<_>>();
+    let checked = compute_all(&time_series).unwrap();
+    let unchecked = compute_all_unchecked(&time_series);
+
+    for i in 0..N_CATCH22 {
+        assert!(
+            (checked[i] - unchecked[i]).abs() < 1e-12
+                || (checked[i].is_nan() && unchecked[i].is_nan()),
+            "feature {i} mismatch: checked={}, unchecked={}",
+            checked[i],
+            unchecked[i]
+        );
+    }
+}
+
+#[test]
 fn test_invalid_index() {
     let time_series = vec![1.0, 2.0, 3.0, 4.0];
     let err = compute(&time_series, N_CATCH22).unwrap_err();
@@ -44,8 +82,35 @@ fn test_non_finite_input() {
 }
 
 #[test]
+fn test_non_finite_infinite_input() {
+    let time_series = vec![1.0, f64::INFINITY, 3.0, 4.0];
+    let err = compute_all(&time_series).unwrap_err();
+    assert!(matches!(err, Catch22Error::NonFiniteValue { .. }));
+}
+
+#[test]
 fn test_input_too_short() {
     let time_series = vec![1.0, 2.0, 3.0];
     let err = compute_all(&time_series).unwrap_err();
     assert!(matches!(err, Catch22Error::InputTooShort { .. }));
+}
+
+#[test]
+fn test_compute_input_too_short() {
+    let time_series = vec![1.0, 2.0, 3.0];
+    let err = compute(&time_series, 0).unwrap_err();
+    assert!(matches!(err, Catch22Error::InputTooShort { .. }));
+}
+
+#[test]
+fn test_zscore_mean_std() {
+    let time_series = vec![1.0, 2.0, 3.0, 4.0];
+    let z = zscore(&time_series);
+
+    let mean = z.iter().sum::<f64>() / z.len() as f64;
+    let variance = z.iter().map(|v| (v - mean) * (v - mean)).sum::<f64>() / z.len() as f64;
+    let std = variance.sqrt();
+
+    assert!(mean.abs() < 1e-12, "zscore mean was {mean}");
+    assert!((std - 1.0).abs() < 1e-12, "zscore std was {std}");
 }
