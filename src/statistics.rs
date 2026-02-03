@@ -53,23 +53,47 @@ pub fn median(a: &[f64]) -> f64 {
 }
 
 pub fn std_dev(a: &[f64]) -> f64 {
-    let mean = mean(a);
-    let variance = a.iter().map(|&x| (x - mean).powi(2)).sum::<f64>() / (a.len() - 1) as f64;
+    if a.len() < 2 {
+        return 0.0;
+    }
+
+    let mut mean = 0.0;
+    let mut m2 = 0.0;
+    let mut count = 0usize;
+
+    for &value in a {
+        count += 1;
+        let delta = value - mean;
+        mean += delta / count as f64;
+        let delta2 = value - mean;
+        m2 += delta * delta2;
+    }
+
+    let variance = m2 / (count - 1) as f64;
     variance.sqrt()
 }
 
 pub fn slope(a: &[f64]) -> f64 {
     let n = a.len();
+    if n == 0 {
+        return 0.0;
+    }
 
-    let x_mean = a.iter().sum::<f64>() / n as f64;
+    let n_f = n as f64;
+    let x_mean = (n_f + 1.0) / 2.0;
+    let x2_mean = (n_f + 1.0) * (2.0 * n_f + 1.0) / 6.0;
 
-    let y = (1..n + 1).map(|x| x as f64).collect::<Vec<f64>>();
-    let y_mean = y.iter().sum::<f64>() / n as f64;
+    let mut y_sum = 0.0;
+    let mut xy_sum = 0.0;
+    for (i, &value) in a.iter().enumerate() {
+        let x = (i + 1) as f64;
+        y_sum += value;
+        xy_sum += x * value;
+    }
 
-    let xy_mean = a.iter().zip(y.iter()).map(|(x, y)| x * y).sum::<f64>() / n as f64;
-    let y2_mean = y.iter().map(|y| y.powi(2)).sum::<f64>() / n as f64;
-
-    let slope = (xy_mean - x_mean * y_mean) / (y2_mean - y_mean.powi(2));
+    let y_mean = y_sum / n_f;
+    let xy_mean = xy_sum / n_f;
+    let slope = (xy_mean - x_mean * y_mean) / (x2_mean - x_mean * x_mean);
     assert!(slope.is_finite());
     slope
 }
@@ -105,13 +129,17 @@ pub fn histcounts(a: &[f64], n_bins: usize) -> (Vec<usize>, Vec<f64>) {
 }
 
 pub fn autocorr(a: &[f64]) -> Vec<f64> {
+    if a.is_empty() {
+        return Vec::new();
+    }
+
     let n = a.len().next_power_of_two() << 1;
     let m = mean(a);
 
     let mut buffer = vec![Complex::new(0.0, 0.0); n];
 
-    for i in 0..a.len() {
-        buffer[i].re = a[i] - m;
+    for (i, value) in a.iter().enumerate() {
+        buffer[i].re = value - m;
     }
 
     let fft = Radix4::new(n, rustfft::FftDirection::Forward);
@@ -123,19 +151,61 @@ pub fn autocorr(a: &[f64]) -> Vec<f64> {
     }
     ifft.process(&mut buffer);
 
-    let buffer = buffer.iter().map(|x| x / buffer[0]).collect::<Vec<_>>();
-    return buffer.iter().map(|x| x.re).collect();
+    let norm = buffer[0];
+    let mut out = Vec::with_capacity(a.len());
+    for value in buffer.iter().take(a.len()) {
+        out.push((value / norm).re);
+    }
+
+    out
+}
+
+pub fn autocovariance(a: &[f64]) -> Vec<f64> {
+    if a.is_empty() {
+        return Vec::new();
+    }
+
+    let n = a.len().next_power_of_two() << 1;
+    let mut buffer = vec![Complex::new(0.0, 0.0); n];
+
+    for (i, value) in a.iter().enumerate() {
+        buffer[i].re = *value;
+    }
+
+    let fft = Radix4::new(n, rustfft::FftDirection::Forward);
+    let ifft = Radix4::new(n, rustfft::FftDirection::Inverse);
+
+    fft.process(&mut buffer);
+    for i in 0..n {
+        buffer[i] = buffer[i] * buffer[i].conj();
+    }
+    ifft.process(&mut buffer);
+
+    let inv_n = 1.0 / n as f64;
+    let mut out = Vec::with_capacity(a.len());
+    for (lag, value) in buffer.iter().take(a.len()).enumerate() {
+        let sum = value.re * inv_n;
+        let denom = (a.len() - lag) as f64;
+        out.push(sum / denom);
+    }
+
+    out
 }
 
 pub fn first_zero(a: &[f64], max_tau: usize) -> usize {
     let autocorr = autocorr(a);
+    first_zero_from_autocorr(&autocorr, max_tau)
+}
+
+pub fn first_zero_from_autocorr(autocorr: &[f64], max_tau: usize) -> usize {
     let mut zero_cross_ind = 0;
+    let max_tau = max_tau.min(autocorr.len());
 
     while zero_cross_ind < max_tau && autocorr[zero_cross_ind] > 0.0 {
         zero_cross_ind += 1;
     }
 
-    return zero_cross_ind;
+    zero_cross_ind
 }
 
 pub fn num_bins_auto(a: &[f64]) -> usize {
@@ -214,13 +284,17 @@ pub fn corr(a: &[f64], b: &[f64], mean_a: f64, mean_b: f64) -> f64 {
 }
 
 pub fn diff(a: &[f64]) -> Vec<f64> {
-    let mut out = vec![0.0; a.len()];
+    if a.len() < 2 {
+        return Vec::new();
+    }
 
-    for i in 1..out.len() {
+    let mut out = vec![0.0; a.len() - 1];
+
+    for i in 1..a.len() {
         out[i - 1] = a[i] - a[i - 1];
     }
 
-    return out;
+    out
 }
 
 pub fn coarsegrain(a: &[f64], num_groups: usize) -> Vec<usize> {
@@ -228,8 +302,11 @@ pub fn coarsegrain(a: &[f64], num_groups: usize) -> Vec<usize> {
     let mut th = vec![0.0; num_groups + 1];
     let ls = linspace(0.0, 1.0, num_groups + 1);
 
+    let mut sorted = a.to_vec();
+    sorted.sort_unstable_by(|x, y| x.partial_cmp(y).unwrap());
+
     for i in 0..num_groups + 1 {
-        th[i] = quantile(a, ls[i]);
+        th[i] = quantile_sorted(&sorted, ls[i]);
     }
 
     th[0] -= 1.0;
@@ -241,7 +318,7 @@ pub fn coarsegrain(a: &[f64], num_groups: usize) -> Vec<usize> {
             }
         }
     }
-    return labels;
+    labels
 }
 
 pub fn linspace(start: f64, end: f64, num_groups: usize) -> Vec<f64> {
@@ -259,6 +336,10 @@ pub fn quantile(a: &[f64], quantile: f64) -> f64 {
     let mut a = a.to_vec();
     a.sort_unstable_by(|x, y| x.partial_cmp(y).unwrap());
 
+    quantile_sorted(&a, quantile)
+}
+
+fn quantile_sorted(a: &[f64], quantile: f64) -> f64 {
     let q = 0.5 / a.len() as f64;
 
     if quantile < q {
@@ -273,7 +354,7 @@ pub fn quantile(a: &[f64], quantile: f64) -> f64 {
     let value = a[idx_left]
         + (quant_idx - idx_left as f64) * (a[idx_right] - a[idx_left])
             / (idx_right - idx_left) as f64;
-    return value;
+    value
 }
 
 pub fn f_entropy(a: &[f64]) -> f64 {
@@ -331,6 +412,7 @@ pub fn welch(a: &[f64], fs: f64, window: &[f64]) -> (Vec<f64>, Vec<f64>) {
 
     let mut p = vec![Complex::new(0.0, 0.0); nfft];
     let mut f = vec![Complex::new(0.0, 0.0); nfft];
+    let fft = Radix4::new(nfft, rustfft::FftDirection::Forward);
 
     let mut xw = vec![0.0; window.len()];
 
@@ -343,7 +425,6 @@ pub fn welch(a: &[f64], fs: f64, window: &[f64]) -> (Vec<f64>, Vec<f64>) {
             f[i].re = xw[j] - m;
         }
 
-        let fft = Radix4::new(nfft, rustfft::FftDirection::Forward);
         fft.process(&mut f);
 
         for j in 0..nfft {
@@ -727,4 +808,23 @@ pub fn matrix_times_vector(
         }
     }
     return c;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn autocovariance_matches_autocov_lag() {
+        let data = vec![1.0, -2.0, 3.5, 4.0, -1.5, 2.25, 0.75, -3.0, 1.2, 0.1];
+        let autocov = autocovariance(&data);
+        for lag in 0..data.len() {
+            let expected = autocov_lag(&data, lag);
+            let actual = autocov[lag];
+            assert!(
+                (actual - expected).abs() < 1e-10,
+                "lag {lag}: expected {expected}, got {actual}"
+            );
+        }
+    }
 }

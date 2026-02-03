@@ -1,7 +1,7 @@
 use crate::statistics::{
-    autocorr, autocorr_lag, autocov_lag, coarsegrain, covariance_matrix, diff, f_entropy,
-    first_zero, histbinassign, histcount_edges, histcounts, is_constant, linreg, max_, mean,
-    median, min_, norm, num_bins_auto, splinefit, std_dev, welch,
+    autocorr, autocorr_lag, autocovariance, coarsegrain, covariance_matrix, f_entropy, first_zero,
+    first_zero_from_autocorr, histbinassign, histcount_edges, histcounts, is_constant, linreg,
+    max_, mean, median, min_, norm, num_bins_auto, splinefit, std_dev, welch,
 };
 
 pub fn dn_outlier_include_np_001_mdrmd(a: &[f64], is_pos: bool) -> f64 {
@@ -43,13 +43,15 @@ pub fn dn_outlier_include_np_001_mdrmd(a: &[f64], is_pos: bool) -> f64 {
             }
         }
 
-        let mut dt_exc = vec![0.0; high_size];
-
-        for j in 0..high_size.saturating_sub(1) {
-            dt_exc[j] = r[j + 1] - r[j];
+        if high_size > 1 {
+            let mut sum_dt = 0.0;
+            for j in 0..high_size - 1 {
+                sum_dt += r[j + 1] - r[j];
+            }
+            msdti1[i] = sum_dt / (high_size - 1) as f64;
+        } else {
+            msdti1[i] = 0.0;
         }
-
-        msdti1[i] = mean(&dt_exc[..high_size.saturating_sub(1)]);
         msdti3[i] = ((high_size.saturating_sub(1)) as f64 * 100.0) / tot as f64;
         msdti4[i] = median(&r[..high_size]) / (a.len() as f64 / 2.0) - 1.0;
     }
@@ -93,15 +95,31 @@ pub fn dn_histogram_mode_n(a: &[f64], n_bins: usize) -> f64 {
 }
 
 pub fn co_embed2_dist_tau_d_expfit_meandiff(a: &[f64]) -> f64 {
-    let mut tau = first_zero(a, a.len());
+    let tau = first_zero(a, a.len());
+    co_embed2_dist_tau_d_expfit_meandiff_with_tau(a, tau)
+}
 
+pub(crate) fn co_embed2_dist_tau_d_expfit_meandiff_with_tau(a: &[f64], tau: usize) -> f64 {
+    if a.len() < 2 {
+        return 0.0;
+    }
+
+    let mut tau = tau;
     if tau > a.len() / 10 {
         tau = a.len() / 10;
     }
+    if tau == 0 || a.len() <= tau + 1 {
+        return 0.0;
+    }
 
-    let mut d = vec![0.0; a.len() - tau];
+    let d_len = a.len() - tau - 1;
+    if d_len < 2 {
+        return 0.0;
+    }
 
-    for i in 0..a.len() - tau - 1 {
+    let mut d = vec![0.0; d_len];
+
+    for i in 0..d_len {
         d[i] = ((a[i + 1] - a[i]).powi(2) + (a[i + tau] - a[i + tau + 1]).powi(2)).sqrt();
 
         if d[i].is_nan() {
@@ -109,18 +127,18 @@ pub fn co_embed2_dist_tau_d_expfit_meandiff(a: &[f64]) -> f64 {
         }
     }
 
-    let l = mean(&d[..a.len() - tau - 1]);
+    let l = mean(&d);
 
-    let n_bins = num_bins_auto(&d[..a.len() - tau - 1]);
+    let n_bins = num_bins_auto(&d);
 
     if n_bins == 0 {
         return 0.0;
     }
-    let (hist_counts, bin_edges) = histcounts(&d[..a.len() - tau - 1], n_bins);
+    let (hist_counts, bin_edges) = histcounts(&d, n_bins);
     let mut hist_counts_norm = vec![0.0; n_bins];
 
     for i in 0..n_bins {
-        hist_counts_norm[i] = hist_counts[i] as f64 / (a.len() - tau - 1) as f64;
+        hist_counts_norm[i] = hist_counts[i] as f64 / d_len as f64;
     }
 
     let mut d_expfit_diff = vec![0.0; n_bins];
@@ -133,11 +151,18 @@ pub fn co_embed2_dist_tau_d_expfit_meandiff(a: &[f64]) -> f64 {
         d_expfit_diff[i] = (hist_counts_norm[i] - expf).abs();
     }
 
-    return mean(&d_expfit_diff[..n_bins]);
+    return mean(&d_expfit_diff);
 }
 
 pub fn co_f1ecac(a: &[f64]) -> f64 {
     let autocorr = autocorr(a);
+    co_f1ecac_from_autocorr(a, &autocorr)
+}
+
+pub(crate) fn co_f1ecac_from_autocorr(a: &[f64], autocorr: &[f64]) -> f64 {
+    if autocorr.is_empty() {
+        return 0.0;
+    }
 
     let thresh = 1.0 / 1.0f64.exp();
 
@@ -157,6 +182,13 @@ pub fn co_f1ecac(a: &[f64]) -> f64 {
 
 pub fn co_first_min_ac(a: &[f64]) -> f64 {
     let autocorr = autocorr(a);
+    co_first_min_ac_from_autocorr(a, &autocorr)
+}
+
+pub(crate) fn co_first_min_ac_from_autocorr(a: &[f64], autocorr: &[f64]) -> f64 {
+    if autocorr.len() < 3 {
+        return a.len() as f64;
+    }
 
     let mut min_ind = a.len();
 
@@ -246,31 +278,39 @@ pub fn co_histogram_ami_even_tau_bins(a: &[f64], tau: usize, n_bins: usize) -> f
 }
 
 pub fn co_trev_1_num(a: &[f64]) -> f64 {
-    let tau = 1;
-
-    let mut diff_temp = vec![0.0; a.len() - tau];
-
-    for i in 0..a.len() - tau {
-        diff_temp[i] = (a[i + 1] - a[i]).powi(3);
+    if a.len() < 2 {
+        return 0.0;
     }
 
-    let out = mean(&diff_temp);
+    let mut sum = 0.0;
+    for i in 0..a.len() - 1 {
+        let diff = a[i + 1] - a[i];
+        sum += diff * diff * diff;
+    }
 
-    return out;
+    sum / (a.len() - 1) as f64
+}
+
+fn local_mean_residuals(a: &[f64], train_length: usize) -> Vec<f64> {
+    if a.len() <= train_length {
+        return Vec::new();
+    }
+
+    let res_len = a.len() - train_length;
+    let mut res = vec![0.0; res_len];
+    let mut window_sum = a[..train_length].iter().sum::<f64>();
+
+    for i in 0..res_len {
+        let yest = window_sum / train_length as f64;
+        res[i] = a[i + train_length] - yest;
+        window_sum += a[i + train_length] - a[i];
+    }
+
+    res
 }
 
 pub fn fc_local_simple_mean_tauresrat(a: &[f64], train_length: usize) -> f64 {
-    let mut res = vec![0.0; a.len() - train_length];
-
-    for i in 0..res.len() {
-        let mut yest = 0.0;
-        for j in 0..train_length {
-            yest += a[i + j]
-        }
-        yest /= train_length as f64;
-
-        res[i] = a[i + train_length] - yest;
-    }
+    let res = local_mean_residuals(a, train_length);
 
     let res_ac1st_z = first_zero(&res, res.len()) as f64;
     let y_ac1st_z = first_zero(a, a.len()) as f64;
@@ -279,18 +319,22 @@ pub fn fc_local_simple_mean_tauresrat(a: &[f64], train_length: usize) -> f64 {
     return out;
 }
 
+pub(crate) fn fc_local_simple_mean_tauresrat_from_autocorr(
+    a: &[f64],
+    autocorr: &[f64],
+    train_length: usize,
+) -> f64 {
+    let res = local_mean_residuals(a, train_length);
+
+    let res_ac1st_z = first_zero(&res, res.len()) as f64;
+    let y_ac1st_z = first_zero_from_autocorr(autocorr, a.len()) as f64;
+
+    let out = res_ac1st_z / y_ac1st_z;
+    return out;
+}
+
 pub fn fc_local_simple_mean_stderr(a: &[f64], train_length: usize) -> f64 {
-    let mut res = vec![0.0; a.len() - train_length];
-
-    for i in 0..res.len() {
-        let mut yest = 0.0;
-        for j in 0..train_length {
-            yest += a[i + j]
-        }
-        yest /= train_length as f64;
-
-        res[i] = a[i + train_length] - yest;
-    }
+    let res = local_mean_residuals(a, train_length);
 
     let out = std_dev(&res);
     return out;
@@ -331,12 +375,15 @@ pub fn in_auto_mutual_info_stats_tau_gaussian_fmmi(a: &[f64], tau: f64) -> f64 {
 }
 
 pub fn md_hrv_classic_pnn(a: &[f64], pnn: usize) -> f64 {
-    let d_y = diff(a);
-
     let mut pnn40 = 0.0;
 
+    if a.len() < 2 {
+        return 0.0;
+    }
+
     for i in 0..a.len() - 1 {
-        if d_y[i].abs() * 1000.0 > pnn as f64 {
+        let diff = a[i + 1] - a[i];
+        if diff.abs() * 1000.0 > pnn as f64 {
             pnn40 += 1.0;
         }
     }
@@ -624,9 +671,12 @@ pub fn sb_transition_matrix_3ac_sumdiagcov(a: &[f64]) -> f64 {
         return f64::NAN;
     }
 
-    let num_groups = 3;
-
     let tau = first_zero(a, a.len());
+    sb_transition_matrix_3ac_sumdiagcov_with_tau(a, tau)
+}
+
+pub(crate) fn sb_transition_matrix_3ac_sumdiagcov_with_tau(a: &[f64], tau: usize) -> f64 {
+    let num_groups = 3;
 
     let y_filt = a.to_vec();
 
@@ -662,19 +712,14 @@ pub fn sb_transition_matrix_3ac_sumdiagcov(a: &[f64]) -> f64 {
 
 pub fn pd_periodicity_wang_th0_01(a: &[f64]) -> f64 {
     let th = 0.01;
-    let y_spline = splinefit(a);
-
-    let mut y_sub = vec![0.0; a.len()];
+    let mut y_sub = splinefit(a);
     for i in 0..a.len() {
-        y_sub[i] = a[i] - y_spline[i];
+        y_sub[i] = a[i] - y_sub[i];
     }
 
     let ac_max = (a.len() as f64 / 3.0).ceil() as usize;
-    let mut acf = vec![0.0; ac_max];
-
-    for i in 1..(ac_max + 1) {
-        acf[i - 1] = autocov_lag(&y_sub, i);
-    }
+    let autocov = autocovariance(&y_sub);
+    let acf = &autocov[1..=ac_max];
 
     let mut troughs = vec![0.0; ac_max];
     let mut peaks = vec![0.0; ac_max];
